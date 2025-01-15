@@ -137,7 +137,6 @@ def run_bot():
         elif message.content.startswith("!leave"):
             if message.guild.id in voice_clients:
                 await voice_clients[message.guild.id].disconnect()
-                del voice_clients[message.guild.id]
                 if message.guild.id in queues:
                     del queues[message.guild.id]
                 await message.channel.send("Desconectado del canal de voz.")
