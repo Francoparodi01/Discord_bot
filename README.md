@@ -28,28 +28,28 @@ Comandos del Bot ⚙️
 1. !play [nombre de la canción] 🎧
 Este comando permite buscar y reproducir música directamente desde YouTube.
 
-[!playvideo](https://github.com/user-attachments/assets/3aa24a11-529d-441a-a38b-afecc17eb607)
+![!playvideo](https://github.com/user-attachments/assets/3aa24a11-529d-441a-a38b-afecc17eb607)
 
 2. !pause & !resume ⏸️▶️
 Pausa y reanuda la canción que se está reproduciendo actualmente.
 
-[!pause_!resume](https://github.com/user-attachments/assets/be94ce71-1045-489f-92aa-175abdfc900a)
+![!pause_!resume](https://github.com/user-attachments/assets/be94ce71-1045-489f-92aa-175abdfc900a)
 
 
 4. !skip o !next ⏭️
 Omitir la canción actual y pasar a la siguiente en la cola.
 
-[!next](https://github.com/user-attachments/assets/a911e7e8-a729-4d8c-93f0-6f2920e67381)
+![!next](https://github.com/user-attachments/assets/a911e7e8-a729-4d8c-93f0-6f2920e67381)
 
 5. !queue 📜
 Muestra la lista de canciones que están en la cola de reproducción.
 
-[!queue](https://github.com/user-attachments/assets/427ebbda-177e-4389-9ba2-ebb57fa96ca6)
+![!queue](https://github.com/user-attachments/assets/427ebbda-177e-4389-9ba2-ebb57fa96ca6)
 
 6. !nowplaying 🎶
 Muestra el título de la canción que está sonando actualmente.
 
-[!nowplaying](https://github.com/user-attachments/assets/23a6aae3-8f0e-40b4-a816-b0de6383c8e8)
+![!nowplaying](https://github.com/user-attachments/assets/23a6aae3-8f0e-40b4-a816-b0de6383c8e8)
 
 7. !leave 👋
 Desconecta el bot del canal de voz.
