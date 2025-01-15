@@ -28,33 +28,33 @@ Comandos del Bot ⚙️
 1. !play [nombre de la canción] 🎧
 Este comando permite buscar y reproducir música directamente desde YouTube.
 
-![Play Command](gifs/!playvideo.mp4)
+![Play Command](gifs/!playvideo.gif)
 
 2. !pause & !resume ⏸️▶️
 Pausa y reanuda la canción que se está reproduciendo actualmente.
 
-![Pause/Resume Command](gifs/!pause_!resume.mp4)
+![Pause/Resume Command](gifs/!pause_!resume.gif)
 
 
 4. !skip o !next ⏭️
 Omitir la canción actual y pasar a la siguiente en la cola.
 
-![Next Command](gifs/!next.mp4)
+![Next Command](gifs/!next.gif)
 
 5. !queue 📜
 Muestra la lista de canciones que están en la cola de reproducción.
 
-![Queue Command](gifs/!queue.mp4)
+![Queue Command](gifs/!queue.gif)
 
 6. !nowplaying 🎶
 Muestra el título de la canción que está sonando actualmente.
 
-![NowPlaying Command](gifs/!nowplaying.mp4)
+![NowPlaying Command](gifs/!nowplaying.gif)
 
 7. !leave 👋
 Desconecta el bot del canal de voz.
 
-![Leave Command](gifs/!leave.mp4)
+![Leave Command](gifs/!queue.gif)
 
 8. !help ❓
 Muestra una lista de todos los comandos disponibles y cómo usarlos.
