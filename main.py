@@ -42,10 +42,10 @@ def run_bot():
         if guild_id in queues and queues[guild_id]:
             next_song = queues[guild_id].pop(0)  # Extrae la siguiente canción de la cola
             voice_client = voice_clients[guild_id]
-            source = discord.FFmpegPCMAudio(next_song, **ffmpeg_options)
+            source = discord.FFmpegPCMAudio(next_song["url"], **ffmpeg_options)
 
             # Almacenar la canción actual para mostrarla en !nowplaying
-            current_song[guild_id] = next_song
+            current_song[guild_id] = next_song  # Ahora almacenamos un diccionario completo
 
             def after_playing(error):
                 if error:
@@ -108,7 +108,8 @@ def run_bot():
                     if message.guild.id not in queues:
                         queues[message.guild.id] = []
 
-                    queues[message.guild.id].append(song_url)
+                    # Guardar el título y la URL en la cola
+                    queues[message.guild.id].append({"title": video_title, "url": song_url})
 
                     # Si no hay canciones reproduciéndose, empezar a reproducir
                     if not voice_clients[message.guild.id].is_playing():
@@ -119,16 +120,19 @@ def run_bot():
             else:
                 await message.channel.send("¡Necesitas estar en un canal de voz!")
 
-        elif message.content.startswith("!stop"):
-            try:
-                if message.guild.id in voice_clients:
-                    voice_clients[message.guild.id].stop()
-                    queues[message.guild.id].clear()
-                    await message.channel.send("Reproducción detenida y cola vaciada.")
-                else:
-                    await message.channel.send("No hay música reproduciéndose.")
-            except Exception as e:
-                await message.channel.send(f"Ocurrió un error al detener: {e}")
+        elif message.content.startswith("!resume"):
+            if message.guild.id in voice_clients:
+                voice_clients[message.guild.id].resume()
+                await message.channel.send("Reproducción reanudada.")
+            else:
+                await message.channel.send("No hay música reproduciéndose.")
+
+        elif message.content.startswith("!pause"):
+            if message.guild.id in voice_clients:
+                voice_clients[message.guild.id].pause()
+                await message.channel.send("Reproducción pausada.")
+            else:
+                await message.channel.send("No hay música reproduciéndose.")
 
         elif message.content.startswith("!leave"):
             if message.guild.id in voice_clients:
@@ -140,21 +144,17 @@ def run_bot():
             else:
                 await message.channel.send("El bot no está conectado a un canal de voz.")
 
-        elif message.content.startswith("!next") or message.content.startswith("!skip"):
-            """Salta a la siguiente canción en la cola."""
-            try:
-                if message.guild.id in voice_clients:
-                    voice_clients[message.guild.id].stop()  # Detiene la canción actual
-                    await play_next_song(message.guild.id)  # Reproduce la siguiente
-                    await message.channel.send("Saltando a la siguiente canción...")
-                else:
-                    await message.channel.send("El bot no está reproduciendo música.")
-            except Exception as e:
-                await message.channel.send(f"Ocurrió un error al saltar la canción: {e}")
+        elif message.content.startswith("!skip") or message.content.startswith("!next"):
+            if message.guild.id in voice_clients:
+                voice_clients[message.guild.id].stop()
+                await message.channel.send("Canción omitida.")
+            else:
+                await message.channel.send("No hay música reproduciéndose.")
 
         elif message.content.startswith("!queue"):
             if message.guild.id in queues and queues[message.guild.id]:
-                queue_list = "\n".join([f"{i+1}. {url}" for i, url in enumerate(queues[message.guild.id])])
+                # Generar una lista de títulos de las canciones
+                queue_list = "\n".join([f"{i+1}. {song['title']}" for i, song in enumerate(queues[message.guild.id])])
                 await message.channel.send(f"Cola de reproducción:\n{queue_list}")
             else:
                 await message.channel.send("La cola está vacía.")
@@ -168,13 +168,26 @@ def run_bot():
                 await message.channel.send("No hay canciones en la cola.")
 
         elif message.content.startswith("!nowplaying"):
-            if message.guild.id in voice_clients and voice_clients[message.guild.id].is_playing():
-                if queues.get(message.guild.id) and len(queues[message.guild.id]) > 0:
-                    current_song = queues[message.guild.id][0]  # La canción que está sonando
-                    await message.channel.send(f"Ahora sonando: {current_song['title']}")
-                else:
-                    await message.channel.send("La cola está vacía.")
+            if message.guild.id in current_song and current_song[message.guild.id]:
+                # Mostrar el título de la canción actual
+                now_playing = current_song[message.guild.id]
+                await message.channel.send(f"Ahora sonando: {now_playing['title']}")
             else:
                 await message.channel.send("No hay ninguna canción reproduciéndose.")
+
+        elif message.content.startswith("!help"):
+            help_message = """
+            Comandos:
+            - !play [nombre de la canción]: Reproduce una canción desde YouTube.
+            - !resume: Reanuda la reproducción de la canción actual.
+            - !pause: Pausa la reproducción de la canción actual.
+            - !skip o !next: Omitir la canción actual y reproducir la siguiente.
+            - !queue: Muestra la cola de reproducción.
+            - !clearqueue: Elimina todas las canciones de la cola.
+            - !nowplaying: Muestra la canción que se está reproduciendo actualmente.
+            - !leave: Desconecta al bot del canal de voz.
+            - !help: Muestra este mensaje de ayuda.
+            """
+            await message.channel.send(help_message)
 
     client.run(DISCORD_TOKEN)
