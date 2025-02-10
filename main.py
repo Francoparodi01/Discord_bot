@@ -26,6 +26,7 @@ def run_bot():
         "outtmpl": "downloads/%(id)s.%(ext)s",
         "restrictfilenames": True,
         "source_address": None,
+        "cookies": "cookies.txt",
     }
 
     ffmpeg_options = {
@@ -188,5 +189,10 @@ def run_bot():
             - !help: Muestra este mensaje de ayuda.
             """
             await message.channel.send(help_message)
-
+        
+        if not os.path.exists("cookies.txt"):
+            print("El archivo de cookies no se encuentra.")
+        else:
+            print("Cookies cargadas correctamente.")
+            
     client.run(DISCORD_TOKEN)
