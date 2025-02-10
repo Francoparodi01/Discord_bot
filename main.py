@@ -28,8 +28,7 @@ def run_bot():
     "source_address": None,
     "cookies": "cookies.txt", 
     "nocheckcertificate": True,
-    "force-ipv4": True,
-    "cookiesfrombrowser": "edge",
+    "force-ipv4": True
     }
 
     ffmpeg_options = {
