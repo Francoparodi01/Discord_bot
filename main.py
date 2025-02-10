@@ -19,19 +19,20 @@ def run_bot():
     current_song = {}
 
     yt_dl_options = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "extractaudio": True,
-        "audioquality": 1,
-        "outtmpl": "downloads/%(id)s.%(ext)s",
-        "restrictfilenames": True,
-        "source_address": None,
-        'extractor_args': {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "extractaudio": True,
+    "audioquality": 1,
+    "outtmpl": "downloads/%(id)s.%(ext)s",
+    "restrictfilenames": True,
+    "source_address": None,
+    'extractor_args': {
         'youtubetab': 'skip=webpage',
         'youtube': 'player_skip=webpage,configs;visitor_data=VISITOR_DATA_VALUE_HERE'
     },
-    'cookies': 'cookies.txt'  # Si tienes cookies necesarias para la autenticación
+    'cookies': 'cookies.txt',  
 }
+
 
     
 
