@@ -12,13 +12,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 cookies_string = os.getenv("YOUTUBE_COOKIES")
 
+# Verificar si se encuentran cookies y escribirlas en un archivo
 if cookies_string:
     cookies = {cookie.split("=")[0]: cookie.split("=")[1] for cookie in cookies_string.split("; ")}
     with open("cookies.txt", "w") as f:
         for key, value in cookies.items():
             f.write(f"{key}\tTRUE\t/\tFALSE\t0\t{value}\n")
-
-    os.system(f'yt-dlp --cookies cookies.txt -f bestvideo+bestaudio "https://www.youtube.com/watch?v=YpSqkImfnDE"')
 else:
     print("Error: No se encontró la variable de entorno 'YOUTUBE_COOKIES'.")
 
@@ -32,19 +31,15 @@ def run_bot():
     current_song = {}
 
     yt_dl_options = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "extractaudio": True,
-    "audioquality": 1,
-    "outtmpl": "downloads/%(id)s.%(ext)s",
-    "restrictfilenames": True,
-    "source_address": None,
-    'extractor_args': {
-        'youtubetab': 'skip=webpage',
-        'youtube': 'player_skip=webpage,configs;visitor_data=VISITOR_DATA_VALUE_HERE'
-    },
-    'cookies': 'cookies.txt',  
-}
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "extractaudio": True,
+        "audioquality": 1,
+        "outtmpl": "downloads/%(id)s.%(ext)s",
+        "restrictfilenames": True,
+        "source_address": None,
+        'cookies': 'cookies.txt',  # Aquí pasamos el archivo de cookies
+    }
 
     ffmpeg_options = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -69,12 +64,15 @@ def run_bot():
                 if error:
                     print(f"Error al reproducir: {error}")
                 # Reproduce la siguiente canción después de la actual
-                asyncio.run_coroutine_threadsafe(play_next_song(guild_id), client.loop)
+                asyncio.create_task(play_next_song(guild_id))  # Usamos create_task
 
             voice_client.play(source, after=after_playing)
         else:
             del queues[guild_id]  # Limpia la cola si está vacía
-            await voice_clients[guild_id].disconnect()  # Desconecta si no hay más canciones
+            # Desconectarse si no hay más canciones
+            voice_client = voice_clients.get(guild_id)
+            if voice_client:
+                await voice_client.disconnect()
             del voice_clients[guild_id]
 
     @client.event
@@ -163,8 +161,12 @@ def run_bot():
 
         elif message.content.startswith("!skip") or message.content.startswith("!next"):
             if message.guild.id in voice_clients:
-                voice_clients[message.guild.id].stop()
-                await message.channel.send("Canción omitida.")
+                voice_client = voice_clients[message.guild.id]
+                if voice_client.is_playing():
+                    voice_client.stop()
+                    await message.channel.send("Canción omitida.")
+                else:
+                    await message.channel.send("No hay música reproduciéndose.")
             else:
                 await message.channel.send("No hay música reproduciéndose.")
 
@@ -175,7 +177,6 @@ def run_bot():
                 await message.channel.send(f"Cola de reproducción:\n{queue_list}")
             else:
                 await message.channel.send("La cola está vacía.")
-
 
         elif message.content.startswith("!clearqueue"):
             if message.guild.id in queues:
