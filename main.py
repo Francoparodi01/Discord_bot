@@ -4,10 +4,25 @@ from youtube_search import YoutubeSearch
 import asyncio
 import os
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()  
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
+cookies_string = os.getenv("YOUTUBE_COOKIES")
+
+# Convertir las cookies en un diccionario
+cookies = {cookie.split("=")[0]: cookie.split("=")[1] for cookie in cookies_string.split("; ")}
+
+# Hacer una petición a YouTube con las cookies
+url = "https://www.youtube.com/feed/subscriptions"  # URL de ejemplo
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+}
+
+response = requests.get(url, headers=headers, cookies=cookies)
 
 def run_bot():
     intents = discord.Intents.default()
@@ -32,9 +47,6 @@ def run_bot():
     },
     'cookies': 'cookies.txt',  
 }
-
-
-    
 
     ffmpeg_options = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
