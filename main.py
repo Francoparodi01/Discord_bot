@@ -12,17 +12,15 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 cookies_string = os.getenv("YOUTUBE_COOKIES")
 
-# Convertir las cookies en un diccionario
-cookies = {cookie.split("=")[0]: cookie.split("=")[1] for cookie in cookies_string.split("; ")}
+if cookies_string:
+    cookies = {cookie.split("=")[0]: cookie.split("=")[1] for cookie in cookies_string.split("; ")}
+    with open("cookies.txt", "w") as f:
+        for key, value in cookies.items():
+            f.write(f"{key}\tTRUE\t/\tFALSE\t0\t{value}\n")
 
-# Hacer una petición a YouTube con las cookies
-url = "https://www.youtube.com/feed/subscriptions"  # URL de ejemplo
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-}
-
-response = requests.get(url, headers=headers, cookies=cookies)
+    os.system(f'yt-dlp --cookies cookies.txt -f bestvideo+bestaudio "https://www.youtube.com/watch?v=YpSqkImfnDE"')
+else:
+    print("Error: No se encontró la variable de entorno 'YOUTUBE_COOKIES'.")
 
 def run_bot():
     intents = discord.Intents.default()
