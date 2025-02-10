@@ -19,7 +19,7 @@ def run_bot():
     current_song = {}
 
     yt_dl_options = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=webm]/bestaudio",
     "noplaylist": True,
     "extractaudio": True,
     "audioquality": 1,
@@ -27,6 +27,9 @@ def run_bot():
     "restrictfilenames": True,
     "source_address": None,
     "cookies": "cookies.txt", 
+    "nocheckcertificate": True,
+    "force-ipv4": True,
+    "cookiesfrombrowser": "edge",
     }
 
     ffmpeg_options = {
