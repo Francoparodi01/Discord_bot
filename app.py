@@ -1,6 +1,5 @@
-import main
 from keep_alive import keep_alive
+import main
 
-if __name__ == '__main__':
-    keep_alive()  # Inicia el servidor Flask
-    main.run_bot()  # Inicia el bot
+keep_alive()       # Inicia el servidor Flask
+main.run_bot()     # Inicia el bot de Discord
