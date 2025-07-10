@@ -1,211 +1,195 @@
 import discord
-import yt_dlp
-from youtube_search import YoutubeSearch  
 import asyncio
+import yt_dlp
 import os
+import random
 from dotenv import load_dotenv
-import requests
 
-load_dotenv()  
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+PREFIX = "!"
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
+intents.guilds = True
+intents.voice_states = True
 
-cookies_string = os.getenv("YOUTUBE_COOKIES")
+client = discord.Client(intents=intents)
 
-# Verificar si se encuentran cookies y escribirlas en un archivo
-if cookies_string:
-    cookies = {cookie.split("=")[0]: cookie.split("=")[1] for cookie in cookies_string.split("; ")}
-    with open("cookies.txt", "w") as f:
-        for key, value in cookies.items():
-            f.write(f"{key}\tTRUE\t/\tFALSE\t0\t{value}\n")
-else:
-    print("Error: No se encontró la variable de entorno 'YOUTUBE_COOKIES'.")
+# Diccionarios por servidor
+queues = {}
+voice_clients = {}
+now_playing = {}
+autoplay_enabled = {}
 
-def run_bot():
-    intents = discord.Intents.default()
-    intents.message_content = True
-    client = discord.Client(intents=intents)
+YTDL_OPTIONS = {
+    'format': 'bestaudio[ext=m4a]/bestaudio',
+    'quiet': True,
+    'default_search': 'ytsearch',
+    'extract_flat': 'in_playlist',
+    'noplaylist': False
+}
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
+}
 
-    voice_clients = {}
-    queues = {}
-    current_song = {}
+ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-    yt_dl_options = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "extractaudio": True,
-        "audioquality": 1,
-        "outtmpl": "downloads/%(id)s.%(ext)s",
-        "restrictfilenames": True,
-        "source_address": None,
-        'cookies': 'cookies.txt',  # Aquí pasamos el archivo de cookies
-    }
+async def join_channel(message):
+    if not message.author.voice:
+        await message.channel.send("❌ Debes estar en un canal de voz.")
+        return None
 
-    ffmpeg_options = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        "options": "-vn",
-    }
+    voice = discord.utils.get(client.voice_clients, guild=message.guild)
+    if not voice or not voice.is_connected():
+        try:
+            voice = await message.author.voice.channel.connect()
+            voice_clients[message.guild.id] = voice
+            print(f"🎧 Conectado a {message.author.voice.channel}")
+        except Exception as e:
+            await message.channel.send("⚠️ No pude unirme al canal de voz.")
+            print(f"Error al unirse: {e}")
+            return None
+    return voice
 
-    @client.event
-    async def on_ready():
-        print(f"{client.user} has connected to Discord!")
+async def search_youtube(query):
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+        if 'entries' in data:
+            return data['entries'][0]
+        return data
+    except Exception as e:
+        print(f"Error al buscar: {e}")
+        return None
 
-    async def play_next_song(guild_id):
-        """Reproduce la siguiente canción en la cola."""
-        if guild_id in queues and queues[guild_id]:
-            next_song = queues[guild_id].pop(0)  # Extrae la siguiente canción de la cola
-            voice_client = voice_clients[guild_id]
-            source = discord.FFmpegPCMAudio(next_song["url"], **ffmpeg_options)
-
-            # Almacenar la canción actual para mostrarla en !nowplaying
-            current_song[guild_id] = next_song  # Ahora almacenamos un diccionario completo
-
-            def after_playing(error):
-                if error:
-                    print(f"Error al reproducir: {error}")
-                # Reproduce la siguiente canción después de la actual
-                asyncio.create_task(play_next_song(guild_id))  # Usamos create_task
-
-            voice_client.play(source, after=after_playing)
+async def play_next(guild):
+    queue = queues.get(guild.id, [])
+    if not queue:
+        if autoplay_enabled.get(guild.id):
+            print("🔁 Autoplay activado")
+            last_song = now_playing.get(guild.id)
+            if last_song:
+                related = await search_youtube(f"{last_song['title']} related")
+                if related and related['webpage_url'] != last_song['webpage_url']:
+                    queue.append(related)
+                    queues[guild.id] = queue
+                else:
+                    print("⚠️ No se encontraron canciones relacionadas distintas.")
+            else:
+                print("⚠️ No hay canción previa para autoplay.")
         else:
-            del queues[guild_id]  # Limpia la cola si está vacía
-            # Desconectarse si no hay más canciones
-            voice_client = voice_clients.get(guild_id)
-            if voice_client:
-                await voice_client.disconnect()
-            del voice_clients[guild_id]
-
-    @client.event
-    async def on_message(message):
-        if message.author == client.user:
+            await voice_clients[guild.id].disconnect()
             return
 
-        if message.content.startswith("!play"):
-            if message.author.voice:
-                channel = message.author.voice.channel
+    if queue:
+        song = queue.pop(0)
+        queues[guild.id] = queue
+        now_playing[guild.id] = song
+        url = song['url']
+        source = await discord.FFmpegOpusAudio.from_probe(url, **FFMPEG_OPTIONS)
+        vc = voice_clients[guild.id]
+        vc.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild), client.loop))
+        print(f"▶️ Reproduciendo: {song['title']}")
+        channel = discord.utils.get(guild.text_channels, name="general") or guild.text_channels[0]
+        await channel.send(f"🎶 Ahora suena: **{song['title']}**")
 
-                # Conectarse al canal de voz si no está conectado
-                if message.guild.id not in voice_clients:
-                    try:
-                        voice_client = await channel.connect()
-                        voice_clients[message.guild.id] = voice_client
-                    except Exception as e:
-                        await message.channel.send(f"No pude conectarme al canal de voz: {e}")
-                        return
+@client.event
+async def on_ready():
+    print(f"✅ Bot conectado como {client.user}")
 
-                try:
-                    search_query = " ".join(message.content.split()[1:])
-                    if not search_query:
-                        await message.channel.send("Por favor, proporciona el nombre del artista y la canción.")
-                        return
+@client.event
+async def on_message(message):
+    if message.author == client.user or not message.content.startswith(PREFIX):
+        return
 
-                    # Buscar en YouTube
-                    results = YoutubeSearch(search_query, max_results=1).to_dict()
-                    if not results:
-                        await message.channel.send("No se encontraron resultados en YouTube.")
-                        return
+    cmd, *args = message.content[len(PREFIX):].strip().split(" ", 1)
+    arg = args[0] if args else ""
 
-                    video_url = f"https://www.youtube.com{results[0]['url_suffix']}"
-                    video_title = results[0]['title']
+    guild = message.guild
+    queue = queues.setdefault(guild.id, [])
+    autoplay_enabled.setdefault(guild.id, False)
 
-                    # Extraer información del video/audio con yt-dlp
-                    ytdl = yt_dlp.YoutubeDL(yt_dl_options)
-                    loop = asyncio.get_event_loop()
-                    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(video_url, download=False))
+    if cmd == "play":
+        voice = await join_channel(message)
+        if not voice:
+            return
 
-                    if "url" not in data:
-                        await message.channel.send("No se pudo obtener el enlace de audio.")
-                        return
+        search = arg if arg else "lofi hip hop"
+        song = await search_youtube(search)
+        if not song:
+            await message.channel.send("❌ No se encontró la canción.")
+            return
 
-                    song_url = data["url"]
-                    await message.channel.send(f"Añadido a la cola: {video_title}")
+        url = song.get("url") or song.get("webpage_url")
+        song['url'] = url
+        queue.append(song)
+        queues[guild.id] = queue
 
-                    # Agregar la canción a la cola
-                    if message.guild.id not in queues:
-                        queues[message.guild.id] = []
+        if not voice.is_playing():
+            await play_next(guild)
+        else:
+            await message.channel.send(f"📥 Añadido a la cola: **{song['title']}**")
 
-                    # Guardar el título y la URL en la cola
-                    queues[message.guild.id].append({"title": video_title, "url": song_url})
+    elif cmd == "pause":
+        if voice_clients.get(guild.id) and voice_clients[guild.id].is_playing():
+            voice_clients[guild.id].pause()
+            await message.channel.send("⏸️ Pausado.")
+    elif cmd == "resume":
+        if voice_clients.get(guild.id) and voice_clients[guild.id].is_paused():
+            voice_clients[guild.id].resume()
+            await message.channel.send("▶️ Reanudado.")
+    elif cmd in ["skip", "next"]:
+        if voice_clients.get(guild.id) and voice_clients[guild.id].is_playing():
+            voice_clients[guild.id].stop()
+            await message.channel.send("⏭️ Saltando a la siguiente...")
+    elif cmd == "leave":
+        if voice_clients.get(guild.id):
+            await voice_clients[guild.id].disconnect()
+            voice_clients.pop(guild.id, None)
+            await message.channel.send("👋 Me fui del canal.")
+    elif cmd == "queue":
+        if queue:
+            msg = "\n".join([f"{i+1}. {s['title']}" for i, s in enumerate(queue)])
+            await message.channel.send(f"📜 Cola actual:\n{msg}")
+        else:
+            await message.channel.send("🕳️ La cola está vacía.")
+    elif cmd == "clearqueue":
+        queues[guild.id] = []
+        await message.channel.send("🧹 Cola vaciada.")
+    elif cmd == "nowplaying":
+        song = now_playing.get(guild.id)
+        if song:
+            await message.channel.send(f"🎵 En reproducción: **{song['title']}**")
+        else:
+            await message.channel.send("⚠️ Nada está sonando.")
+    elif cmd == "autoplay":
+        if arg.lower() == "on":
+            autoplay_enabled[guild.id] = True
+            await message.channel.send("🔁 Autoplay activado.")
+        elif arg.lower() == "off":
+            autoplay_enabled[guild.id] = False
+            await message.channel.send("⛔ Autoplay desactivado.")
+        else:
+            await message.channel.send("Uso: `!autoplay on` o `!autoplay off`")
+    elif cmd == "help":
+        await message.channel.send(
+            "**🎧 Comandos disponibles:**\n"
+            "`!play [nombre|url]` - Reproduce una canción\n"
+            "`!pause` / `!resume` - Pausar o reanudar\n"
+            "`!skip` / `!next` - Siguiente canción\n"
+            "`!leave` - Salir del canal\n"
+            "`!queue` - Ver cola\n"
+            "`!clearqueue` - Vaciar cola\n"
+            "`!nowplaying` - Ver canción actual\n"
+            "`!autoplay on/off` - Autoplay\n"
+            "`!help` - Este mensaje"
+        )
+    else:
+        await message.channel.send("❓ Comando desconocido. Usa `!help` para ver los comandos disponibles.")
 
-                    # Si no hay canciones reproduciéndose, empezar a reproducir
-                    if not voice_clients[message.guild.id].is_playing():
-                        await play_next_song(message.guild.id)
-                except Exception as e:
-                    print(f"Error al intentar reproducir: {e}")
-                    await message.channel.send("Ocurrió un error al intentar reproducir la música.")
-            else:
-                await message.channel.send("¡Necesitas estar en un canal de voz!")
 
-        elif message.content.startswith("!resume"):
-            if message.guild.id in voice_clients:
-                voice_clients[message.guild.id].resume()
-                await message.channel.send("Reproducción reanudada.")
-            else:
-                await message.channel.send("No hay música reproduciéndose.")
-
-        elif message.content.startswith("!pause"):
-            if message.guild.id in voice_clients:
-                voice_clients[message.guild.id].pause()
-                await message.channel.send("Reproducción pausada.")
-            else:
-                await message.channel.send("No hay música reproduciéndose.")
-
-        elif message.content.startswith("!leave"):
-            if message.guild.id in voice_clients:
-                await voice_clients[message.guild.id].disconnect()
-                if message.guild.id in queues:
-                    del queues[message.guild.id]
-                await message.channel.send("Desconectado del canal de voz.")
-            else:
-                await message.channel.send("El bot no está conectado a un canal de voz.")
-
-        elif message.content.startswith("!skip") or message.content.startswith("!next"):
-            if message.guild.id in voice_clients:
-                voice_client = voice_clients[message.guild.id]
-                if voice_client.is_playing():
-                    voice_client.stop()
-                    await message.channel.send("Canción omitida.")
-                else:
-                    await message.channel.send("No hay música reproduciéndose.")
-            else:
-                await message.channel.send("No hay música reproduciéndose.")
-
-        elif message.content.startswith("!queue"):
-            if message.guild.id in queues and queues[message.guild.id]:
-                # Generar una lista de títulos de las canciones
-                queue_list = "\n".join([f"{i+1}. {song['title']}" for i, song in enumerate(queues[message.guild.id])])
-                await message.channel.send(f"Cola de reproducción:\n{queue_list}")
-            else:
-                await message.channel.send("La cola está vacía.")
-
-        elif message.content.startswith("!clearqueue"):
-            if message.guild.id in queues:
-                queues[message.guild.id].clear()
-                await message.channel.send("La cola ha sido vaciada.")
-            else:
-                await message.channel.send("No hay canciones en la cola.")
-
-        elif message.content.startswith("!nowplaying"):
-            if message.guild.id in current_song and current_song[message.guild.id]:
-                # Mostrar el título de la canción actual
-                now_playing = current_song[message.guild.id]
-                await message.channel.send(f"Ahora sonando: {now_playing['title']}")
-            else:
-                await message.channel.send("No hay ninguna canción reproduciéndose.")
-
-        elif message.content.startswith("!help"):
-            help_message = """
-            Comandos:
-            - !play [nombre de la canción]: Reproduce una canción desde YouTube.
-            - !resume: Reanuda la reproducción de la canción actual.
-            - !pause: Pausa la reproducción de la canción actual.
-            - !skip o !next: Omitir la canción actual y reproducir la siguiente.
-            - !queue: Muestra la cola de reproducción.
-            - !clearqueue: Elimina todas las canciones de la cola.
-            - !nowplaying: Muestra la canción que se está reproduciendo actualmente.
-            - !leave: Desconecta al bot del canal de voz.
-            - !help: Muestra este mensaje de ayuda.
-            """
-            await message.channel.send(help_message)
-
-    client.run(DISCORD_TOKEN)
+def run_bot():
+    client.run(TOKEN)
