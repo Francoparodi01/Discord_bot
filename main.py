@@ -4,6 +4,11 @@ from youtube_search import YoutubeSearch
 import asyncio
 import os
 from dotenv import load_dotenv
+import concurrent.futures
+import difflib
+import re
+
+
 
 load_dotenv()  
 
@@ -17,6 +22,7 @@ def run_bot():
     voice_clients = {}
     queues = {}
     current_song = {}
+    song_history = {}
     autoplay_flags = {}  # Control por servidor
 
     yt_dl_options = {
@@ -33,14 +39,44 @@ def run_bot():
         "options": "-vn",
     }
 
-    def buscar_relacionada(titulo_original):
+    def limpiar_titulo(titulo):
+        """Elimina palabras irrelevantes para evitar repeticiones disfrazadas."""
+        titulo = re.sub(r'\(.*?\)|\[.*?\]', '', titulo)  # Eliminar paréntesis y corchetes
+        titulo = titulo.lower()
+        for palabra in ["letra", "karaoke", "oficial", "audio", "video", "hd", "live", "remasterizado"]:
+            titulo = titulo.replace(palabra, "")
+        return titulo.strip()
+
+    def extraer_artista(titulo):
+        """Extrae el artista del título original usando el patrón común 'Artista - Tema'."""
+        partes = titulo.split(" - ")
+        return partes[0] if len(partes) > 1 else titulo
+
+    def buscar_relacionada(titulo_original, historial):
+        artista = extraer_artista(titulo_original)
+        query = f"{artista} canciones"  # Busca temas del artista, no el mismo título
+
+        print(f"[Autoplay] Buscando canciones de: {artista}")
         try:
-            print(f"[Autoplay] Buscando canción relacionada con: {titulo_original}")
-            resultados = YoutubeSearch(titulo_original + " música", max_results=5).to_dict()
+            resultados = YoutubeSearch(query, max_results=10).to_dict()
+            titulo_limpio = limpiar_titulo(titulo_original)
+
             for r in resultados:
-                if r["title"].lower() != titulo_original.lower():
-                    print(f"[Autoplay] Relacionada encontrada: {r['title']}")
-                    return f"https://www.youtube.com{r['url_suffix']}", r["title"]
+                candidato = r["title"]
+                candidato_limpio = limpiar_titulo(candidato)
+
+                similitud = difflib.SequenceMatcher(None, titulo_limpio, candidato_limpio).ratio()
+
+                if similitud > 0.8:
+                    continue  # Muy parecido al actual
+
+                if candidato in historial:
+                    continue  # Ya se escuchó
+
+                print(f"[Autoplay] Relacionada aceptada: {candidato}")
+                return f"https://www.youtube.com{r['url_suffix']}", candidato
+
+            print("[Autoplay] No se encontró canción suficientemente distinta.")
         except Exception as e:
             print(f"[Error] Falló búsqueda relacionada: {e}")
         return None, None
@@ -68,8 +104,10 @@ def run_bot():
 
         else:
             if guild_id in current_song and autoplay_flags.get(guild_id, True):
-                original_title = current_song[guild_id]['title']
-                video_url, video_title = buscar_relacionada(original_title)
+                song_history.setdefault(guild_id, set())
+                song_history[guild_id].add(current_song[guild_id]['title'])
+                video_url, video_title = buscar_relacionada(current_song[guild_id]['title'], song_history[guild_id])
+
 
                 if video_url:
                     ytdl = yt_dlp.YoutubeDL(yt_dl_options)
@@ -125,7 +163,10 @@ def run_bot():
 
                     ytdl = yt_dlp.YoutubeDL(yt_dl_options)
                     loop = asyncio.get_event_loop()
-                    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(video_url, download=False))
+                    yt_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+                    data = await loop.run_in_executor(yt_executor, lambda: ytdl.extract_info(video_url, download=False))
+
 
                     if "url" not in data:
                         await message.channel.send("No se pudo obtener el enlace de audio.")
@@ -156,6 +197,25 @@ def run_bot():
             else:
                 await message.channel.send("No hay música reproduciéndose.")
 
+        
+        elif message.content.startswith("!join"):
+            if message.author.voice:
+                channel = message.author.voice.channel
+                if message.guild.id not in voice_clients:
+                    try:
+                        voice_client = await channel.connect()
+                        voice_clients[message.guild.id] = voice_client
+                        print(f"[Conectado] A canal de voz: {channel.name}")
+                        await message.channel.send(f"Conectado al canal de voz: {channel.name}")
+                    except Exception as e:
+                        await message.channel.send(f"No pude conectarme al canal de voz: {e}")
+                else:
+                    await message.channel.send("Ya estoy conectado a un canal de voz.")
+            else:
+                await message.channel.send("¡Necesitas estar en un canal de voz!")
+
+
+
         elif message.content.startswith("!pause"):
             if message.guild.id in voice_clients:
                 voice_clients[message.guild.id].pause()
@@ -166,12 +226,16 @@ def run_bot():
 
         elif message.content.startswith("!leave"):
             if message.guild.id in voice_clients:
-                await voice_clients[message.guild.id].disconnect()
+                voice_client = voice_clients[message.guild.id]
+                await voice_client.disconnect()
+                voice_clients.pop(message.guild.id, None)
                 queues.pop(message.guild.id, None)
+                current_song.pop(message.guild.id, None)
+                autoplay_flags.pop(message.guild.id, None)
+                print(f"[Desconectado] De canal de voz: {voice_client.channel.name}")
                 await message.channel.send("Desconectado del canal de voz.")
-                print("[Control] Desconectado por comando.")
             else:
-                await message.channel.send("El bot no está conectado a un canal de voz.")
+                await message.channel.send("No estoy conectado a ningún canal de voz.")
 
         elif message.content.startswith("!skip") or message.content.startswith("!next"):
             if message.guild.id in voice_clients:
