@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+build
+dist
+downloads
+data
+cookies.txt
+*.log
+*.pyc

@@ -1,0 +1,2 @@
+# Netscape HTTP Cookie File
+# Export your own YouTube cookies here only if you need authenticated playback.

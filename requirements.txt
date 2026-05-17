@@ -1,7 +1,7 @@
-discord.py
-yt-dlp
+discord.py[voice]
+yt-dlp[default]
 Flask
+waitress
 youtube-search
 python-dotenv
-PyNaCl
 requests

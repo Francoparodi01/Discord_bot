@@ -1,68 +1,98 @@
+# Dj Monaco
 
-# Discord Music Bot 🎵🎶
+Bot de musica para Discord con reproduccion desde YouTube, cola, autoplay con feedback persistente y soporte para Docker.
 
+## Funciones
 
-Este es un bot de música para Discord que te permite escuchar música directamente desde YouTube en un canal de voz. Usando comandos sencillos para gestionar la cola de reproducción, pausar, reanudar, omitir canciones y algunas funcionalidades más.
+- Reproduce busquedas o URLs directas con `!play`.
+- Gestiona cola con `!queue`, `!clear`, `!remove` y `!shuffle`.
+- Controla reproduccion con `!pause`, `!resume`, `!skip`, `!next`, `!stop` y `!loop`.
+- Muestra el tema actual con `!nowplaying`.
+- Aprende del autoplay:
+  - si se saltea una recomendacion, la penaliza;
+  - si luego se pide manualmente otro tema del mismo artista, favorece esa direccion;
+  - guarda el aprendizaje en `data/autoplay_feedback.json`.
+- Se desconecta automaticamente despues de 5 minutos si el canal queda sin usuarios humanos.
 
-Librerías utilizadas: discord.py, yt-dlp, youtube-search, python-dotenv
+## Requisitos
 
-Comenzando 🚀
+- Python 3.13 o Docker.
+- Token de bot de Discord.
+- `ffmpeg`.
 
-Para crear un bot personalizado y propio, seguí estos pasos:
+## Configuracion local
 
-Ingresá a la sección de developers en https://discord.com/developers/docs/intro
-Luego en applications y creas una nueva aplicación.
-Una vez creado el bot, en OAuth2 copiamos la clave secreta y seleccionamos la casilla de bot con el rol de administrador para invitar el bot a nuestro canal.
+1. Copia `.env.example` como `.env`.
+2. Completa `DISCORD_TOKEN`.
+3. Instala dependencias:
 
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
-Requisitos 📋
-Python 3.x
-Librerías necesarias: discord.py, yt-dlp, youtube-search, python-dotenv.
-Una vez completados los pasos anteriores, clona el repositorio e instala las dependencias con el siguiente comando:
+4. Inicia el bot:
 
-"pip install -r requirements.txt"
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
 
+## Docker
 
-Comandos del Bot ⚙️
+Levantar:
 
-1. !play [nombre de la canción] 🎧
-Este comando permite buscar y reproducir música directamente desde YouTube.
+```powershell
+docker compose up -d --build
+```
 
-![!playvideo](https://github.com/user-attachments/assets/3aa24a11-529d-441a-a38b-afecc17eb607)
+Ver logs en PowerShell:
 
-2. !pause & !resume ⏸️▶️
-Pausa y reanuda la canción que se está reproduciendo actualmente.
+```powershell
+docker compose logs -f | Select-String "Feedback|Autoplay"
+```
 
-![!pause_!resume](https://github.com/user-attachments/assets/be94ce71-1045-489f-92aa-175abdfc900a)
+Ver logs en `cmd`:
 
+```cmd
+docker compose logs -f | findstr "Feedback Autoplay"
+```
 
-4. !skip o !next ⏭️
-Omitir la canción actual y pasar a la siguiente en la cola.
+Detener:
 
-![!next](https://github.com/user-attachments/assets/a911e7e8-a729-4d8c-93f0-6f2920e67381)
+```powershell
+docker compose down
+```
 
-5. !queue 📜
-Muestra la lista de canciones que están en la cola de reproducción.
+El volumen `./data:/app/data` conserva el aprendizaje de autoplay entre reinicios.
 
-![!queue](https://github.com/user-attachments/assets/427ebbda-177e-4389-9ba2-ebb57fa96ca6)
+## Comandos
 
-6. !nowplaying 🎶
-Muestra el título de la canción que está sonando actualmente.
+| Comando | Descripcion |
+| --- | --- |
+| `!play [busqueda o URL]` | Agrega un tema y reproduce si hace falta. |
+| `!pause` / `!resume` | Pausa o reanuda. |
+| `!skip` / `!next` | Salta el tema actual. |
+| `!stop` | Detiene y limpia la cola. |
+| `!queue` | Muestra el tema actual y lo que sigue. |
+| `!nowplaying` | Muestra el tema actual. |
+| `!clear` | Limpia la cola pendiente. |
+| `!remove [numero]` | Quita un tema de la cola. |
+| `!shuffle` | Mezcla la cola pendiente. |
+| `!loop` | Activa o desactiva repeticion del tema actual. |
+| `!autoplay on/off` | Activa o desactiva recomendaciones automaticas. |
+| `!feedback` | Muestra lo aprendido por autoplay en el servidor. |
+| `!volume [0-100]` | Ajusta volumen. |
+| `!leave` | Desconecta el bot. |
+| `!help` | Lista comandos. |
 
-![!nowplaying](https://github.com/user-attachments/assets/23a6aae3-8f0e-40b4-a816-b0de6383c8e8)
+## Tests
 
-7. !leave 👋
-Desconecta el bot del canal de voz.
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
 
-![!leave](https://github.com/user-attachments/assets/d37b3e7a-e053-4bbe-bb91-9fb50bf495e9)
+## Seguridad
 
-8. !help ❓
-Muestra una lista de todos los comandos disponibles y cómo usarlos.
-
-Contribuir 🤝
-
-Si tienes ideas para mejorar este bot, no dudes en hacer un fork y crear un pull request.
-
-
-
-
+- No subas `.env`.
+- No subas `cookies.txt`; si necesitas cookies para videos restringidos, exportalas localmente usando `cookies.example.txt` como referencia.
+- Si alguna vez un token o cookie se expone, revocalo y genera uno nuevo.
