@@ -24,14 +24,15 @@ Bot de musica para Discord con reproduccion desde YouTube, cola, autoplay con fe
 
 1. Copia `.env.example` como `.env`.
 2. Completa `DISCORD_TOKEN`.
-3. Instala dependencias:
+3. Deja `AUDIO_MODE=download` para reproducir desde cache local. Es el modo recomendado porque evita cortes cuando YouTube cierra un stream HTTPS a mitad de cancion.
+4. Instala dependencias:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-4. Inicia el bot:
+5. Inicia el bot:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py
@@ -64,6 +65,8 @@ docker compose down
 ```
 
 El volumen `./data:/app/data` conserva el aprendizaje de autoplay entre reinicios.
+
+Por defecto el bot descarga cada tema en `downloads/` antes de reproducirlo. Si queres probar streaming directo, cambia `AUDIO_MODE=stream` en `.env`, aunque puede ser menos estable con YouTube.
 
 ## Comandos
 

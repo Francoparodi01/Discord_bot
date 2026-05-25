@@ -15,6 +15,7 @@ from youtube_search import YoutubeSearch
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+AUDIO_MODE = os.getenv("AUDIO_MODE", "download").strip().lower()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +40,7 @@ idle_disconnect_tasks = {}
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
 DATA_DIR = "data"
 FEEDBACK_FILE = os.path.join(DATA_DIR, "autoplay_feedback.json")
+DOWNLOAD_DIR = "downloads"
 IDLE_DISCONNECT_SECONDS = 300
 AUTOPLAY_BLOCKED_TERMS = (
     "cover",
@@ -49,25 +51,47 @@ AUTOPLAY_BLOCKED_TERMS = (
     "en vivo",
 )
 
+
+def cookiefile_valido(path):
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            first_line = file.readline().strip()
+    except OSError as error:
+        logger.warning("No pude leer %s: %s", path, error)
+        return False
+    return first_line == "# Netscape HTTP Cookie File"
+
 yt_dl_options = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "noplaylist": True,
     "extractaudio": True,
     "audioquality": 1,
-    "outtmpl": "downloads/%(id)s.%(ext)s",
+    "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
     "restrictfilenames": True,
     "quiet": True,
+    "noprogress": True,
     "nocheckcertificate": True,
+    "retries": 10,
+    "fragment_retries": 10,
+    "continuedl": True,
     "js_runtimes": {"node": {}},
     "remote_components": ["ejs:npm"],
 }
-if os.path.exists("cookies.txt"):
+if cookiefile_valido("cookies.txt"):
     yt_dl_options["cookiefile"] = "cookies.txt"
+elif os.path.exists("cookies.txt"):
+    logger.warning("cookies.txt existe, pero no tiene formato Netscape valido; se ignora.")
 
-ffmpeg_options = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn",
-}
+remote_ffmpeg_before_options = (
+    "-nostdin "
+    "-reconnect 1 "
+    "-reconnect_streamed 1 "
+    "-reconnect_at_eof 1 "
+    "-reconnect_on_network_error 1 "
+    "-reconnect_delay_max 5"
+)
 
 
 def limpiar_titulo(titulo):
@@ -172,31 +196,69 @@ def cargar_feedback():
     logger.info("Historial de feedback cargado para %s servidor(es).", len(autoplay_feedback))
 
 
-async def extraer_info(query):
-    objetivo = query if URL_PATTERN.match(query) else f"ytsearch1:{query}"
-    ytdl = yt_dlp.YoutubeDL(yt_dl_options)
-    loop = asyncio.get_running_loop()
-    data = await loop.run_in_executor(
-        None,
-        lambda: ytdl.extract_info(objetivo, download=False),
-    )
-
+def seleccionar_entrada(data):
     if data.get("entries"):
         return next((entry for entry in data["entries"] if entry), None)
     return data
 
 
+def obtener_archivo_descargado(data):
+    for download in data.get("requested_downloads") or []:
+        filepath = download.get("filepath")
+        if filepath and os.path.exists(filepath):
+            return filepath
+
+    for key in ("filepath", "_filename", "filename"):
+        filepath = data.get(key)
+        if filepath and os.path.exists(filepath):
+            return filepath
+
+    return None
+
+
+def opciones_ffmpeg(song):
+    before_options = "-nostdin" if song.get("is_local") else remote_ffmpeg_before_options
+    return {
+        "before_options": before_options,
+        "options": "-vn",
+    }
+
+
+async def extraer_info(query, download=False):
+    objetivo = query if URL_PATTERN.match(query) else f"ytsearch1:{query}"
+    ytdl = yt_dlp.YoutubeDL(yt_dl_options)
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(
+        None,
+        lambda: ytdl.extract_info(objetivo, download=download),
+    )
+
+    return seleccionar_entrada(data)
+
+
 async def crear_cancion(query):
-    data = await extraer_info(query)
-    if not data or not data.get("url"):
+    download = AUDIO_MODE != "stream"
+    data = await extraer_info(query, download=download)
+    if not data:
         return None
     title = data.get("title", "Tema sin titulo")
+    audio_file = obtener_archivo_descargado(data)
+    audio_source = audio_file or data.get("url")
+
+    if not audio_source:
+        return None
+
+    if download and not audio_file:
+        logger.warning("No pude encontrar archivo descargado para %s; usando stream remoto.", title)
+
     return {
         "title": title,
-        "url": data["url"],
+        "url": audio_source,
+        "stream_url": data["url"],
         "artist": resolver_artista(data, title),
         "video_id": data.get("id"),
         "webpage_url": data.get("webpage_url"),
+        "is_local": bool(audio_file),
         "source": "manual",
     }
 
@@ -278,9 +340,10 @@ async def buscar_relacionada(titulo_original, artista, historial, feedback):
 def iniciar_reproduccion(guild_id, voice_client, song):
     current_song[guild_id] = song
     source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(song["url"], **ffmpeg_options)
+        discord.FFmpegPCMAudio(song["url"], **opciones_ffmpeg(song))
     )
-    logger.info("Reproduccion: %s", song["title"])
+    origen = "archivo local" if song.get("is_local") else "stream remoto"
+    logger.info("Reproduccion: %s (%s)", song["title"], origen)
 
     loop = asyncio.get_running_loop()
 
