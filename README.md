@@ -84,7 +84,7 @@ Por defecto el bot descarga cada tema en `downloads/` antes de reproducirlo. Si 
 | `!loop` | Activa o desactiva repeticion del tema actual. |
 | `!autoplay on/off` | Activa o desactiva recomendaciones automaticas. |
 | `!feedback` | Muestra lo aprendido por autoplay en el servidor. |
-| `!volume [0-100]` | Ajusta volumen. |
+| `!volume [0-100]` | Ajusta volumen. En modo Opus se aplica desde el proximo tema. |
 | `!leave` | Desconecta el bot. |
 | `!help` | Lista comandos. |
 

@@ -1,10 +1,12 @@
 import asyncio
 import difflib
+import glob
 import json
 import logging
 import os
 import random
 import re
+import subprocess
 from collections import Counter, deque
 
 import discord
@@ -35,6 +37,7 @@ autoplay_flags = {}
 play_locks = {}
 autoplay_feedback = {}
 repeat_modes = {}
+guild_volumes = {}
 manual_advance_requests = set()
 idle_disconnect_tasks = {}
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
@@ -42,6 +45,8 @@ DATA_DIR = "data"
 FEEDBACK_FILE = os.path.join(DATA_DIR, "autoplay_feedback.json")
 DOWNLOAD_DIR = "downloads"
 IDLE_DISCONNECT_SECONDS = 300
+MIN_AUDIO_FILE_SIZE = 128 * 1024
+DURATION_TOLERANCE_SECONDS = 20
 AUTOPLAY_BLOCKED_TERMS = (
     "cover",
     "karaoke",
@@ -202,25 +207,108 @@ def seleccionar_entrada(data):
     return data
 
 
+def obtener_duracion_audio(filepath):
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                filepath,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning("No pude validar duracion de %s: %s", filepath, error)
+        return None
+
+    if result.returncode != 0:
+        logger.warning("ffprobe no pudo leer %s: %s", filepath, result.stderr.strip())
+        return None
+
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def borrar_archivo_cache(filepath, motivo):
+    try:
+        os.remove(filepath)
+        logger.warning("Cache descartado: %s (%s)", filepath, motivo)
+    except OSError as error:
+        logger.warning("No pude borrar cache invalido %s: %s", filepath, error)
+
+
+def archivo_audio_valido(filepath, expected_duration=None):
+    if not filepath or not os.path.exists(filepath):
+        return False
+
+    size = os.path.getsize(filepath)
+    if size < MIN_AUDIO_FILE_SIZE:
+        borrar_archivo_cache(filepath, "archivo demasiado chico")
+        return False
+
+    duration = obtener_duracion_audio(filepath)
+    if duration is None:
+        return True
+
+    if duration < 10:
+        borrar_archivo_cache(filepath, f"duracion invalida: {duration:.1f}s")
+        return False
+
+    if expected_duration and duration + DURATION_TOLERANCE_SECONDS < expected_duration:
+        borrar_archivo_cache(
+            filepath,
+            f"duracion incompleta: {duration:.1f}s de {expected_duration:.1f}s",
+        )
+        return False
+
+    return True
+
+
+def archivos_cacheados(video_id):
+    if not video_id:
+        return []
+    return glob.glob(os.path.join(DOWNLOAD_DIR, f"{video_id}.*"))
+
+
 def obtener_archivo_descargado(data):
+    expected_duration = data.get("duration")
     for download in data.get("requested_downloads") or []:
         filepath = download.get("filepath")
-        if filepath and os.path.exists(filepath):
+        if archivo_audio_valido(filepath, expected_duration):
             return filepath
 
     for key in ("filepath", "_filename", "filename"):
         filepath = data.get(key)
-        if filepath and os.path.exists(filepath):
+        if archivo_audio_valido(filepath, expected_duration):
+            return filepath
+
+    for filepath in archivos_cacheados(data.get("id")):
+        if archivo_audio_valido(filepath, expected_duration):
             return filepath
 
     return None
 
 
-def opciones_ffmpeg(song):
+def volumen_guild(guild_id):
+    return guild_volumes.get(guild_id, 1.0)
+
+
+def opciones_ffmpeg(song, guild_id):
     before_options = "-nostdin" if song.get("is_local") else remote_ffmpeg_before_options
+    filters = ["aresample=async=1:first_pts=0", f"volume={volumen_guild(guild_id):.2f}"]
     return {
         "before_options": before_options,
-        "options": "-vn",
+        "options": f"-vn -filter:a {','.join(filters)}",
     }
 
 
@@ -243,6 +331,16 @@ async def crear_cancion(query):
         return None
     title = data.get("title", "Tema sin titulo")
     audio_file = obtener_archivo_descargado(data)
+
+    if download and not audio_file:
+        retry_query = data.get("webpage_url") or query
+        logger.warning("Cache no disponible o invalido para %s; reintentando descarga.", title)
+        data = await extraer_info(retry_query, download=True)
+        if not data:
+            return None
+        title = data.get("title", title)
+        audio_file = obtener_archivo_descargado(data)
+
     audio_source = audio_file or data.get("url")
 
     if not audio_source:
@@ -258,6 +356,7 @@ async def crear_cancion(query):
         "artist": resolver_artista(data, title),
         "video_id": data.get("id"),
         "webpage_url": data.get("webpage_url"),
+        "duration": data.get("duration"),
         "is_local": bool(audio_file),
         "source": "manual",
     }
@@ -339,11 +438,18 @@ async def buscar_relacionada(titulo_original, artista, historial, feedback):
 
 def iniciar_reproduccion(guild_id, voice_client, song):
     current_song[guild_id] = song
-    source = discord.PCMVolumeTransformer(
-        discord.FFmpegPCMAudio(song["url"], **opciones_ffmpeg(song))
+    source = discord.FFmpegOpusAudio(
+        song["url"],
+        bitrate=128,
+        **opciones_ffmpeg(song, guild_id),
     )
     origen = "archivo local" if song.get("is_local") else "stream remoto"
-    logger.info("Reproduccion: %s (%s)", song["title"], origen)
+    logger.info(
+        "Reproduccion: %s (%s, opus, volumen=%s%%)",
+        song["title"],
+        origen,
+        int(volumen_guild(guild_id) * 100),
+    )
 
     loop = asyncio.get_running_loop()
 
@@ -591,8 +697,15 @@ async def on_message(msg):
             try:
                 volume = int(content.split()[1])
                 if 0 <= volume <= 100:
-                    voice_clients[gid].source.volume = volume / 100
-                    await msg.channel.send(f"Volumen ajustado a {volume}%")
+                    guild_volumes[gid] = volume / 100
+                    source = voice_clients[gid].source
+                    if hasattr(source, "volume"):
+                        source.volume = guild_volumes[gid]
+                        await msg.channel.send(f"Volumen ajustado a {volume}%")
+                    else:
+                        await msg.channel.send(
+                            f"Volumen ajustado a {volume}%. Se aplica desde el proximo tema."
+                        )
                 else:
                     await msg.channel.send("El volumen debe estar entre 0 y 100.")
             except (IndexError, ValueError):
