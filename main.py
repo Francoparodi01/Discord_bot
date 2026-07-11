@@ -46,9 +46,11 @@ URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
 DATA_DIR = "data"
 FEEDBACK_FILE = os.path.join(DATA_DIR, "autoplay_feedback.json")
 DOWNLOAD_DIR = "downloads"
+OPUS_CACHE_DIR = os.path.join(DOWNLOAD_DIR, "opus")
 IDLE_DISCONNECT_SECONDS = 300
 MIN_AUDIO_FILE_SIZE = 128 * 1024
 DURATION_TOLERANCE_SECONDS = 20
+OPUS_CACHE_BITRATE = "128k"
 AUTOPLAY_BLOCKED_TERMS = (
     "cover",
     "karaoke",
@@ -326,6 +328,77 @@ def archivos_cacheados(video_id):
     return glob.glob(os.path.join(DOWNLOAD_DIR, f"{video_id}.*"))
 
 
+def ruta_opus_cache(data, audio_file):
+    base_name = data.get("id") or os.path.splitext(os.path.basename(audio_file))[0]
+    return os.path.join(OPUS_CACHE_DIR, f"{base_name}.opus")
+
+
+def generar_opus_cache(audio_file, opus_file):
+    os.makedirs(OPUS_CACHE_DIR, exist_ok=True)
+    temp_file = f"{opus_file}.tmp"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                audio_file,
+                "-vn",
+                "-map_metadata",
+                "-1",
+                "-f",
+                "opus",
+                "-c:a",
+                "libopus",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-b:a",
+                OPUS_CACHE_BITRATE,
+                "-application",
+                "audio",
+                temp_file,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning("No pude crear cache Opus para %s: %s", audio_file, error)
+        return None
+
+    if result.returncode != 0:
+        logger.warning("ffmpeg no pudo crear cache Opus: %s", result.stderr.strip())
+        if os.path.exists(temp_file):
+            borrar_archivo_cache(temp_file, "conversion opus fallida")
+        return None
+
+    os.replace(temp_file, opus_file)
+    return opus_file
+
+
+def obtener_opus_cache(data, audio_file):
+    if not audio_file:
+        return None
+
+    expected_duration = data.get("duration")
+    opus_file = ruta_opus_cache(data, audio_file)
+    if archivo_audio_valido(opus_file, expected_duration):
+        return opus_file
+
+    generated = generar_opus_cache(audio_file, opus_file)
+    if generated and archivo_audio_valido(generated, expected_duration):
+        logger.info("Cache Opus listo: %s", generated)
+        return generated
+
+    return None
+
+
 def obtener_archivo_descargado(data):
     expected_duration = data.get("duration")
     for download in data.get("requested_downloads") or []:
@@ -349,8 +422,18 @@ def volumen_guild(guild_id):
     return guild_volumes.get(guild_id, 1.0)
 
 
+def usar_copia_opus(song, guild_id):
+    return song.get("is_opus_cache") and abs(volumen_guild(guild_id) - 1.0) < 0.001
+
+
 def opciones_ffmpeg(song, guild_id):
     before_options = "-nostdin" if song.get("is_local") else remote_ffmpeg_before_options
+    if usar_copia_opus(song, guild_id):
+        return {
+            "before_options": before_options,
+            "options": "-vn",
+        }
+
     filters = ["aresample=async=1:first_pts=0", f"volume={volumen_guild(guild_id):.2f}"]
     return {
         "before_options": before_options,
@@ -395,15 +478,21 @@ async def crear_cancion(query):
     if download and not audio_file:
         logger.warning("No pude encontrar archivo descargado para %s; usando stream remoto.", title)
 
+    opus_file = obtener_opus_cache(data, audio_file) if audio_file else None
+    playback_source = opus_file or audio_source
+
     return {
         "title": title,
-        "url": audio_source,
+        "url": playback_source,
+        "audio_file": audio_file,
+        "opus_file": opus_file,
         "stream_url": data["url"],
         "artist": resolver_artista(data, title),
         "video_id": data.get("id"),
         "webpage_url": data.get("webpage_url"),
         "duration": data.get("duration"),
         "is_local": bool(audio_file),
+        "is_opus_cache": bool(opus_file),
         "source": "manual",
     }
 
@@ -568,14 +657,24 @@ async def buscar_relacionada(titulo_original, artista, historial, feedback):
 
 def iniciar_reproduccion(guild_id, voice_client, song):
     current_song[guild_id] = song
+    ffmpeg_audio_options = opciones_ffmpeg(song, guild_id)
+    if usar_copia_opus(song, guild_id):
+        ffmpeg_audio_options["codec"] = "copy"
+    else:
+        ffmpeg_audio_options["bitrate"] = 128
+
     source = discord.FFmpegOpusAudio(
         song["url"],
-        bitrate=128,
-        **opciones_ffmpeg(song, guild_id),
+        **ffmpeg_audio_options,
     )
-    origen = "archivo local" if song.get("is_local") else "stream remoto"
+    if song.get("is_opus_cache"):
+        origen = "cache opus"
+    elif song.get("is_local"):
+        origen = "archivo local"
+    else:
+        origen = "stream remoto"
     logger.info(
-        "Reproduccion: %s (%s, opus, volumen=%s%%)",
+        "Reproduccion: %s (%s, volumen=%s%%)",
         song["title"],
         origen,
         int(volumen_guild(guild_id) * 100),

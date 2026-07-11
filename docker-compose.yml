@@ -12,3 +12,4 @@ services:
       - 8.8.8.8
     volumes:
       - ./data:/app/data
+      - ./downloads:/app/downloads

@@ -67,8 +67,9 @@ docker compose down
 ```
 
 El volumen `./data:/app/data` conserva el aprendizaje de autoplay entre reinicios.
+El volumen `./downloads:/app/downloads` conserva la cache de audio y Opus entre reinicios.
 
-Por defecto el bot descarga cada tema en `downloads/` antes de reproducirlo. Si queres probar streaming directo, cambia `AUDIO_MODE=stream` en `.env`, aunque puede ser menos estable con YouTube.
+Por defecto el bot descarga cada tema en `downloads/`, lo convierte una vez a `downloads/opus/` y reproduce ese Opus con copia directa cuando el volumen esta en 100%. Esto reduce CPU durante playback y evita cortes por transcodificacion en tiempo real. Si queres probar streaming directo, cambia `AUDIO_MODE=stream` en `.env`, aunque puede ser menos estable con YouTube.
 
 ## Comandos
 
@@ -86,7 +87,7 @@ Por defecto el bot descarga cada tema en `downloads/` antes de reproducirlo. Si 
 | `!loop` | Activa o desactiva repeticion del tema actual. |
 | `!autoplay on/off` | Activa o desactiva recomendaciones automaticas. |
 | `!feedback` | Muestra lo aprendido por autoplay, ejemplos ML y pesos principales. |
-| `!volume [0-100]` | Ajusta volumen. En modo Opus se aplica desde el proximo tema. |
+| `!volume [0-100]` | Ajusta volumen. En 100% usa cache Opus con menor CPU. |
 | `!leave` | Desconecta el bot. |
 | `!help` | Lista comandos. |
 
