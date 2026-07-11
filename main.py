@@ -38,6 +38,7 @@ play_locks = {}
 autoplay_feedback = {}
 repeat_modes = {}
 guild_volumes = {}
+network_paused_guilds = set()
 manual_advance_requests = set()
 idle_disconnect_tasks = {}
 URL_PATTERN = re.compile(r"^https?://", re.IGNORECASE)
@@ -135,6 +136,7 @@ def limpiar_estado(guild_id):
     ):
         data.pop(guild_id, None)
     manual_advance_requests.discard(guild_id)
+    network_paused_guilds.discard(guild_id)
     cancelar_desconexion_inactiva(guild_id)
 
 
@@ -548,9 +550,46 @@ def programar_desconexion_inactiva(guild_id):
     idle_disconnect_tasks[guild_id] = asyncio.create_task(desconectar_si_sigue_vacio())
 
 
+def pausar_reproduccion_por_red():
+    paused = 0
+    for guild_id, voice_client in list(voice_clients.items()):
+        if voice_client and voice_client.is_playing():
+            voice_client.pause()
+            network_paused_guilds.add(guild_id)
+            paused += 1
+
+    if paused:
+        logger.warning("Conexion Discord interrumpida; pausando %s reproduccion(es).", paused)
+
+
+def reanudar_reproduccion_por_red():
+    resumed = 0
+    for guild_id in list(network_paused_guilds):
+        voice_client = voice_clients.get(guild_id)
+        if voice_client and voice_client.is_connected() and voice_client.is_paused():
+            voice_client.resume()
+            resumed += 1
+        network_paused_guilds.discard(guild_id)
+
+    if resumed:
+        logger.info("Conexion Discord recuperada; reanudando %s reproduccion(es).", resumed)
+
+
 @client.event
 async def on_ready():
     logger.info("Bot conectado como %s", client.user)
+    reanudar_reproduccion_por_red()
+
+
+@client.event
+async def on_disconnect():
+    pausar_reproduccion_por_red()
+
+
+@client.event
+async def on_resumed():
+    logger.info("Sesion Discord reanudada.")
+    reanudar_reproduccion_por_red()
 
 
 @client.event
