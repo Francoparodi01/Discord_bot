@@ -15,6 +15,7 @@ Bot de musica para Discord con reproduccion desde YouTube, cola, autoplay con fe
   - explora ocasionalmente entre buenos candidatos para no quedarse encerrado;
   - guarda el aprendizaje en `data/autoplay_feedback.json`.
 - Se desconecta automaticamente despues de 5 minutos si el canal queda sin usuarios humanos.
+- Detecta cortes prematuros de reproduccion y reintenta el tema desde el segundo aproximado donde se corto.
 
 ## Requisitos
 
@@ -58,6 +59,12 @@ Ver logs en `cmd`:
 
 ```cmd
 docker compose logs -f | findstr "Feedback Autoplay"
+```
+
+Ver recuperaciones de cortes:
+
+```cmd
+docker compose logs -f | findstr /I "Playback cortado Reproduccion"
 ```
 
 Detener:

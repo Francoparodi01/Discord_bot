@@ -8,6 +8,7 @@ import random
 import re
 import subprocess
 import math
+import time
 from collections import Counter, deque
 
 import discord
@@ -39,6 +40,7 @@ play_locks = {}
 autoplay_feedback = {}
 repeat_modes = {}
 guild_volumes = {}
+playback_started_at = {}
 network_paused_guilds = set()
 manual_advance_requests = set()
 idle_disconnect_tasks = {}
@@ -51,6 +53,9 @@ IDLE_DISCONNECT_SECONDS = 300
 MIN_AUDIO_FILE_SIZE = 128 * 1024
 DURATION_TOLERANCE_SECONDS = 20
 OPUS_CACHE_BITRATE = "128k"
+PLAYBACK_EARLY_END_TOLERANCE_SECONDS = 12
+PLAYBACK_MIN_RECOVERY_SECONDS = 3
+PLAYBACK_MAX_RECOVERY_ATTEMPTS = 2
 AUTOPLAY_BLOCKED_TERMS = (
     "cover",
     "karaoke",
@@ -182,6 +187,7 @@ def limpiar_estado(guild_id):
         song_history,
         play_locks,
         repeat_modes,
+        playback_started_at,
     ):
         data.pop(guild_id, None)
     manual_advance_requests.discard(guild_id)
@@ -206,6 +212,28 @@ def obtener_feedback(guild_id):
 
 def clonar_cancion(song):
     return dict(song)
+
+
+def reiniciar_cancion(song):
+    clone = dict(song)
+    clone["playback_offset"] = 0.0
+    clone["playback_retries"] = 0
+    return clone
+
+
+def duracion_cancion(song):
+    try:
+        duration = float(song.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    return duration if duration > 0 else None
+
+
+def offset_cancion(song):
+    try:
+        return max(0.0, float(song.get("playback_offset") or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def serializar_feedback():
@@ -428,6 +456,10 @@ def usar_copia_opus(song, guild_id):
 
 def opciones_ffmpeg(song, guild_id):
     before_options = "-nostdin" if song.get("is_local") else remote_ffmpeg_before_options
+    offset = offset_cancion(song)
+    if offset > 0:
+        before_options = f"{before_options} -ss {offset:.3f}"
+
     if usar_copia_opus(song, guild_id):
         return {
             "before_options": before_options,
@@ -657,6 +689,7 @@ async def buscar_relacionada(titulo_original, artista, historial, feedback):
 
 def iniciar_reproduccion(guild_id, voice_client, song):
     current_song[guild_id] = song
+    playback_started_at[guild_id] = time.monotonic()
     ffmpeg_audio_options = opciones_ffmpeg(song, guild_id)
     if usar_copia_opus(song, guild_id):
         ffmpeg_audio_options["codec"] = "copy"
@@ -674,10 +707,13 @@ def iniciar_reproduccion(guild_id, voice_client, song):
     else:
         origen = "stream remoto"
     logger.info(
-        "Reproduccion: %s (%s, volumen=%s%%)",
+        "Reproduccion: %s (%s, volumen=%s%%, offset=%.1fs, duracion=%s, retry=%s)",
         song["title"],
         origen,
         int(volumen_guild(guild_id) * 100),
+        offset_cancion(song),
+        int(duracion_cancion(song) or 0),
+        song.get("playback_retries", 0),
     )
 
     loop = asyncio.get_running_loop()
@@ -701,19 +737,51 @@ async def play_next(guild_id):
             return
 
         current = current_song.get(guild_id)
+        was_manual_advance = guild_id in manual_advance_requests
+        if current and not was_manual_advance:
+            started_at = playback_started_at.pop(guild_id, None)
+            if started_at is not None:
+                elapsed = time.monotonic() - started_at
+                offset = offset_cancion(current)
+                played_until = offset + elapsed
+                duration = duracion_cancion(current)
+                retries = int(current.get("playback_retries", 0))
+                ended_early = (
+                    duration
+                    and elapsed >= PLAYBACK_MIN_RECOVERY_SECONDS
+                    and played_until < duration - PLAYBACK_EARLY_END_TOLERANCE_SECONDS
+                    and retries < PLAYBACK_MAX_RECOVERY_ATTEMPTS
+                )
+
+                if ended_early:
+                    recovered = dict(current)
+                    recovered["playback_offset"] = max(0.0, played_until - 2)
+                    recovered["playback_retries"] = retries + 1
+                    logger.warning(
+                        "Playback cortado temprano: %s en %.1fs/%.1fs; reintentando desde %.1fs (%s/%s).",
+                        current["title"],
+                        played_until,
+                        duration,
+                        recovered["playback_offset"],
+                        recovered["playback_retries"],
+                        PLAYBACK_MAX_RECOVERY_ATTEMPTS,
+                    )
+                    iniciar_reproduccion(guild_id, voice_client, recovered)
+                    return
+
         should_repeat = (
             current
             and repeat_modes.get(guild_id) == "song"
-            and guild_id not in manual_advance_requests
+            and not was_manual_advance
         )
         manual_advance_requests.discard(guild_id)
 
         if should_repeat:
-            iniciar_reproduccion(guild_id, voice_client, clonar_cancion(current))
+            iniciar_reproduccion(guild_id, voice_client, reiniciar_cancion(current))
             return
 
         if queues.get(guild_id):
-            iniciar_reproduccion(guild_id, voice_client, queues[guild_id].popleft())
+            iniciar_reproduccion(guild_id, voice_client, reiniciar_cancion(queues[guild_id].popleft()))
             return
 
         if current_song.get(guild_id) and autoplay_flags.get(guild_id, False):
@@ -744,7 +812,7 @@ async def play_next(guild_id):
                     logger.exception("Error al preparar autoplay: %s", error)
 
             if queues.get(guild_id):
-                iniciar_reproduccion(guild_id, voice_client, queues[guild_id].popleft())
+                iniciar_reproduccion(guild_id, voice_client, reiniciar_cancion(queues[guild_id].popleft()))
                 return
 
         await voice_client.disconnect()
