@@ -7,6 +7,7 @@ import os
 import random
 import re
 import subprocess
+import math
 from collections import Counter, deque
 
 import discord
@@ -56,6 +57,15 @@ AUTOPLAY_BLOCKED_TERMS = (
     "live",
     "en vivo",
 )
+ML_EXPLORATION_RATE = 0.12
+ML_DEFAULT_WEIGHTS = {
+    "bias": 0.0,
+    "artist_feedback": 2.0,
+    "title_rejected": -5.0,
+    "title_preferred": 3.0,
+    "same_artist": 0.7,
+    "title_similarity": -1.2,
+}
 
 
 def cookiefile_valido(path):
@@ -124,6 +134,43 @@ def limpiar_artista(artista):
     return limpiar_titulo(artista)
 
 
+def nuevo_modelo_ml():
+    return {
+        "weights": dict(ML_DEFAULT_WEIGHTS),
+        "learning_rate": 0.25,
+        "samples": 0,
+    }
+
+
+def normalizar_modelo_ml(model):
+    if not isinstance(model, dict):
+        return nuevo_modelo_ml()
+
+    weights = dict(ML_DEFAULT_WEIGHTS)
+    weights.update(
+        {
+            key: float(value)
+            for key, value in model.get("weights", {}).items()
+            if key in ML_DEFAULT_WEIGHTS
+        }
+    )
+    return {
+        "weights": weights,
+        "learning_rate": float(model.get("learning_rate", 0.25)),
+        "samples": int(model.get("samples", 0)),
+    }
+
+
+def normalizar_feedback(feedback=None):
+    feedback = feedback or {}
+    return {
+        "artist_scores": Counter(feedback.get("artist_scores", {})),
+        "rejected_titles": Counter(feedback.get("rejected_titles", {})),
+        "preferred_titles": Counter(feedback.get("preferred_titles", {})),
+        "ml": normalizar_modelo_ml(feedback.get("ml")),
+    }
+
+
 def limpiar_estado(guild_id):
     for data in (
         voice_clients,
@@ -149,14 +196,10 @@ def obtener_cola(guild_id):
 
 
 def obtener_feedback(guild_id):
-    return autoplay_feedback.setdefault(
-        guild_id,
-        {
-            "artist_scores": Counter(),
-            "rejected_titles": Counter(),
-            "preferred_titles": Counter(),
-        },
-    )
+    feedback = autoplay_feedback.setdefault(guild_id, normalizar_feedback())
+    if "ml" not in feedback:
+        feedback.update(normalizar_feedback(feedback))
+    return feedback
 
 
 def clonar_cancion(song):
@@ -169,6 +212,11 @@ def serializar_feedback():
             "artist_scores": dict(feedback["artist_scores"]),
             "rejected_titles": dict(feedback["rejected_titles"]),
             "preferred_titles": dict(feedback["preferred_titles"]),
+            "ml": {
+                "weights": dict(feedback["ml"]["weights"]),
+                "learning_rate": feedback["ml"]["learning_rate"],
+                "samples": feedback["ml"]["samples"],
+            },
         }
         for guild_id, feedback in autoplay_feedback.items()
     }
@@ -194,11 +242,7 @@ def cargar_feedback():
         return
 
     for guild_id, feedback in data.items():
-        autoplay_feedback[int(guild_id)] = {
-            "artist_scores": Counter(feedback.get("artist_scores", {})),
-            "rejected_titles": Counter(feedback.get("rejected_titles", {})),
-            "preferred_titles": Counter(feedback.get("preferred_titles", {})),
-        }
+        autoplay_feedback[int(guild_id)] = normalizar_feedback(feedback)
 
     logger.info("Historial de feedback cargado para %s servidor(es).", len(autoplay_feedback))
 
@@ -364,7 +408,66 @@ async def crear_cancion(query):
     }
 
 
-def puntuar_candidato(candidato, titulo_original, historial, feedback):
+def limitar(valor, minimo, maximo):
+    return max(minimo, min(maximo, valor))
+
+
+def construir_features_candidato(candidato, titulo_original, feedback, artista_contexto=None):
+    candidato_limpio = limpiar_titulo(candidato)
+    titulo_limpio = limpiar_titulo(titulo_original)
+    artista_candidato = limpiar_artista(extraer_artista(candidato))
+    artista_contexto = limpiar_artista(artista_contexto or extraer_artista(titulo_original))
+    similitud = difflib.SequenceMatcher(None, titulo_limpio, candidato_limpio).ratio()
+
+    return {
+        "artist_feedback": limitar(feedback["artist_scores"][artista_candidato] / 5, -1, 1),
+        "title_rejected": limitar(feedback["rejected_titles"][candidato_limpio] / 5, 0, 1),
+        "title_preferred": limitar(feedback["preferred_titles"][candidato_limpio] / 5, 0, 1),
+        "same_artist": 1.0 if artista_candidato == artista_contexto else 0.0,
+        "title_similarity": similitud,
+    }
+
+
+def predecir_preferencia(feedback, features):
+    weights = feedback["ml"]["weights"]
+    raw_score = weights["bias"]
+    raw_score += sum(weights.get(name, 0.0) * value for name, value in features.items())
+    raw_score = limitar(raw_score, -30, 30)
+    return 1 / (1 + math.exp(-raw_score))
+
+
+def entrenar_modelo_autoplay(guild_id, song, liked, context_title=None):
+    feedback = obtener_feedback(guild_id)
+    features = song.get("ml_features")
+    if not features:
+        features = construir_features_candidato(
+            song["title"],
+            context_title or song.get("ml_context_title") or "",
+            feedback,
+            song.get("artist"),
+        )
+
+    prediction = predecir_preferencia(feedback, features)
+    error = (1.0 if liked else 0.0) - prediction
+    learning_rate = feedback["ml"]["learning_rate"]
+    weights = feedback["ml"]["weights"]
+
+    weights["bias"] += learning_rate * error
+    for name, value in features.items():
+        weights[name] = weights.get(name, 0.0) + learning_rate * error * value
+
+    feedback["ml"]["samples"] += 1
+    logger.info(
+        "ML autoplay: label=%s pred=%.3f error=%.3f samples=%s title=%s",
+        int(liked),
+        prediction,
+        error,
+        feedback["ml"]["samples"],
+        song["title"],
+    )
+
+
+def puntuar_candidato(candidato, titulo_original, historial, feedback, artista_contexto=None):
     candidato_original = candidato.lower()
     candidato_limpio = limpiar_titulo(candidato)
     titulo_limpio = limpiar_titulo(titulo_original)
@@ -375,13 +478,19 @@ def puntuar_candidato(candidato, titulo_original, historial, feedback):
     if any(term in candidato_original for term in AUTOPLAY_BLOCKED_TERMS):
         return None
 
-    score = 0
-    score -= feedback["rejected_titles"][candidato_limpio] * 10
-    score += feedback["preferred_titles"][candidato_limpio] * 4
+    features = construir_features_candidato(candidato, titulo_original, feedback, artista_contexto)
+    probability = predecir_preferencia(feedback, features)
+    return probability * 100
 
-    artista_candidato = limpiar_artista(extraer_artista(candidato))
-    score += feedback["artist_scores"][artista_candidato] * 2
-    return score
+
+def elegir_candidato(candidatos):
+    candidatos_ordenados = sorted(candidatos, key=lambda item: item["score"], reverse=True)
+    if len(candidatos_ordenados) > 1 and random.random() < ML_EXPLORATION_RATE:
+        limite = min(3, len(candidatos_ordenados))
+        elegido = random.choice(candidatos_ordenados[:limite])
+        logger.info("ML autoplay explorando: %s (score=%.2f)", elegido["title"], elegido["score"])
+        return elegido
+    return candidatos_ordenados[0]
 
 
 def registrar_skip_autoplay(guild_id):
@@ -392,6 +501,7 @@ def registrar_skip_autoplay(guild_id):
     feedback = obtener_feedback(guild_id)
     feedback["rejected_titles"][limpiar_titulo(song["title"])] += 1
     feedback["artist_scores"][limpiar_artista(song["artist"])] -= 1
+    entrenar_modelo_autoplay(guild_id, song, liked=False)
     guardar_feedback()
     logger.info("Skip autoplay: %s", song["title"])
 
@@ -409,6 +519,12 @@ def registrar_preferencia_manual(guild_id, song):
     feedback = obtener_feedback(guild_id)
     feedback["artist_scores"][artista_manual] += 2
     feedback["preferred_titles"][limpiar_titulo(song["title"])] += 1
+    entrenar_modelo_autoplay(
+        guild_id,
+        song,
+        liked=True,
+        context_title=autoplay_song["title"],
+    )
     guardar_feedback()
     logger.info("Mismo artista preferido: %s -> %s", song["artist"], song["title"])
 
@@ -423,19 +539,31 @@ async def buscar_relacionada(titulo_original, artista, historial, feedback):
 
         for resultado in resultados:
             candidato = resultado["title"]
-            score = puntuar_candidato(candidato, titulo_original, historial_limpio, feedback)
+            features = construir_features_candidato(candidato, titulo_original, feedback, artista)
+            score = puntuar_candidato(candidato, titulo_original, historial_limpio, feedback, artista)
             if score is None:
                 continue
-            candidatos.append((score, candidato, resultado["url_suffix"]))
+            candidatos.append(
+                {
+                    "score": score,
+                    "title": candidato,
+                    "url_suffix": resultado["url_suffix"],
+                    "features": features,
+                }
+            )
 
         if candidatos:
-            score, candidato, url_suffix = max(candidatos, key=lambda item: item[0])
-            logger.info("Relacionada aceptada: %s (score=%s)", candidato, score)
-            return f"https://www.youtube.com{url_suffix}", candidato
+            elegido = elegir_candidato(candidatos)
+            logger.info("Relacionada aceptada: %s (score=%.2f)", elegido["title"], elegido["score"])
+            return (
+                f"https://www.youtube.com{elegido['url_suffix']}",
+                elegido["title"],
+                elegido["features"],
+            )
     except Exception as error:
         logger.exception("Error en busqueda relacionada: %s", error)
 
-    return None, None
+    return None, None, None
 
 
 def iniciar_reproduccion(guild_id, voice_client, song):
@@ -495,7 +623,7 @@ async def play_next(guild_id):
             last_artist = last_song["artist"]
             song_history.setdefault(guild_id, []).append(last_title)
             feedback = obtener_feedback(guild_id)
-            url, title = await buscar_relacionada(
+            url, title, ml_features = await buscar_relacionada(
                 last_title,
                 last_artist,
                 song_history[guild_id],
@@ -509,6 +637,8 @@ async def play_next(guild_id):
                         song["title"] = title
                         song["artist"] = resolver_artista(song, title)
                         song["source"] = "autoplay"
+                        song["ml_features"] = ml_features
+                        song["ml_context_title"] = last_title
                         obtener_cola(guild_id).append(song)
                         logger.info("Autoplay agregando: %s", title)
                 except Exception as error:
@@ -815,6 +945,15 @@ async def on_message(msg):
                 lineas.append(
                     "Temas rechazados: " + ", ".join(f"{name} ({score})" for name, score in rechazadas)
                 )
+            model = feedback["ml"]
+            pesos = sorted(
+                model["weights"].items(),
+                key=lambda item: abs(item[1]),
+                reverse=True,
+            )[:3]
+            lineas.append(f"ML: {model['samples']} ejemplos entrenados.")
+            if pesos:
+                lineas.append("Pesos ML: " + ", ".join(f"{name}={value:.2f}" for name, value in pesos))
             await msg.channel.send("\n".join(lineas))
 
     elif content.startswith("!autoplay on"):

@@ -8,9 +8,11 @@ Bot de musica para Discord con reproduccion desde YouTube, cola, autoplay con fe
 - Gestiona cola con `!queue`, `!clear`, `!remove` y `!shuffle`.
 - Controla reproduccion con `!pause`, `!resume`, `!skip`, `!next`, `!stop` y `!loop`.
 - Muestra el tema actual con `!nowplaying`.
-- Aprende del autoplay:
+- Aprende del autoplay con un modelo ML online:
   - si se saltea una recomendacion, la penaliza;
   - si luego se pide manualmente otro tema del mismo artista, favorece esa direccion;
+  - rankea candidatos con pesos aprendidos por servidor;
+  - explora ocasionalmente entre buenos candidatos para no quedarse encerrado;
   - guarda el aprendizaje en `data/autoplay_feedback.json`.
 - Se desconecta automaticamente despues de 5 minutos si el canal queda sin usuarios humanos.
 
@@ -83,7 +85,7 @@ Por defecto el bot descarga cada tema en `downloads/` antes de reproducirlo. Si 
 | `!shuffle` | Mezcla la cola pendiente. |
 | `!loop` | Activa o desactiva repeticion del tema actual. |
 | `!autoplay on/off` | Activa o desactiva recomendaciones automaticas. |
-| `!feedback` | Muestra lo aprendido por autoplay en el servidor. |
+| `!feedback` | Muestra lo aprendido por autoplay, ejemplos ML y pesos principales. |
 | `!volume [0-100]` | Ajusta volumen. En modo Opus se aplica desde el proximo tema. |
 | `!leave` | Desconecta el bot. |
 | `!help` | Lista comandos. |
